@@ -49,9 +49,7 @@ const char* mqtt_pass =   "MQTT PASS";
 const char* mqtt_root = "/esp/"Hostname ;
 
 //periodic status reports
-const unsigned int stats_interval = 60;  // Update statistics and measure every 60 seconds
-
-#define ALTITUDE 1013.25 //Altitude of your location (m above sea level)
+const unsigned int stats_interval = 300;  // Update statistics and measure every 300 seconds
 
 Adafruit_BME280 bme; // I2C
 ESP8266WebServer server(80);
@@ -59,11 +57,8 @@ ESP8266HTTPUpdateServer httpUpdater;
 
 #define CONFIG_MQTT_TOPIC_GET "/get"
 #define CONFIG_MQTT_TOPIC_GET_TEMP "/temperatur"
-#define CONFIG_MQTT_TOPIC_GET_DEW "/taupunkt"
-#define CONFIG_MQTT_TOPIC_GET_HUM "/luftfeuchte_absolut"
-#define CONFIG_MQTT_TOPIC_GET_HUMR "/luftfeuchte"
+#define CONFIG_MQTT_TOPIC_GET_HUM "/luftfeuchte"
 #define CONFIG_MQTT_TOPIC_GET_PRES "/luftdruck"
-#define CONFIG_MQTT_TOPIC_GET_PRESR "/luftdruck_relativ"
 #define CONFIG_MQTT_TOPIC_SET "/set"
 #define CONFIG_MQTT_TOPIC_SET_RESET "/reset"
 #define CONFIG_MQTT_TOPIC_SET_UPDATE "/update"
@@ -83,9 +78,7 @@ ESP8266HTTPUpdateServer httpUpdater;
 #define MQTT_PRJ_VERSION "1.0.0"
 
 const float cToKOffset = 273.15;
-float absoluteHumidity(float temperature, float humidity);
 float saturationVaporPressure(float temperature);
-float dewPoint(float temperature, float humidity);
 
 #ifdef USE_MQTT
 class PubSubClientWrapper : public PubSubClient{
@@ -200,23 +193,15 @@ void sendStatsInterval(void) {
   #endif
 
   float temperature = bme.readTemperature();
-  float humidity_r = bme.readHumidity();
-  float humidity = absoluteHumidity(temperature, humidity_r);
+  float humidity = bme.readHumidity();
   float pressure = bme.readPressure() / 100.0F;
-  float pressure_r = bme.seaLevelForAltitude(ALTITUDE, pressure);
-  float dew = dewPoint(temperature, humidity_r);
+
 
   Serial.print(F("T: "));
   Serial.print((String)temperature);
-  Serial.print(F(" *C\nDP: "));
-  Serial.print((String)dew);
-  Serial.print(F(" *C\nH: "));
-  Serial.print((String)humidity_r);
-  Serial.print(F(" %\nAH: "));
+  Serial.print(F(" *C\nAH: "));
   Serial.print((String)humidity);
-  Serial.print(F(" g/m3\nRP: "));
-  Serial.print((String)pressure_r);
-  Serial.print(F(" hPa\nP: "));
+  Serial.print(F(" %\nP: "));
   Serial.print((String)pressure);
   Serial.println(F(" hPa"));
   Serial.flush();
@@ -225,15 +210,10 @@ void sendStatsInterval(void) {
 
   #ifdef USE_MQTT
     client.publish(((String)mqtt_root + CONFIG_MQTT_TOPIC_GET + CONFIG_MQTT_TOPIC_GET_TEMP), (String)temperature);
-    client.publish(((String)mqtt_root + CONFIG_MQTT_TOPIC_GET + CONFIG_MQTT_TOPIC_GET_DEW), (String)dew);
     client.publish(((String)mqtt_root + CONFIG_MQTT_TOPIC_GET + CONFIG_MQTT_TOPIC_GET_HUM), (String)humidity);
-    client.publish(((String)mqtt_root + CONFIG_MQTT_TOPIC_GET + CONFIG_MQTT_TOPIC_GET_HUMR), (String)humidity_r);
     client.publish(((String)mqtt_root + CONFIG_MQTT_TOPIC_GET + CONFIG_MQTT_TOPIC_GET_PRES), (String)pressure);
-    client.publish(((String)mqtt_root + CONFIG_MQTT_TOPIC_GET + CONFIG_MQTT_TOPIC_GET_PRESR), (String)pressure_r);
   #endif
-
 }
-
 
 #ifdef USE_MQTT
   void reconnect() {
@@ -357,15 +337,9 @@ void handleRoot() {
   out += "<tr><td>Temperatur</td><td><span class=\"sensor\">";
   out += bme.readTemperature();
   out += " *C</span></td></tr>"; 
-  out += "<tr><td>Temperatur Fahrenheit</td><td><span class=\"sensor\">";
-  out += 1.8 * bme.readTemperature() + 32;
-  out += " *F</span></td></tr>"; 
   out += "<tr><td>Luftdruck</td><td><span class=\"sensor\">";
   out += bme.readPressure() / 100.0F;
   out += " hPa</span></td></tr>";
-  out += "<tr><td>Meter &uuml;ber Meeresh&ouml;he</td><td><span class=\"sensor\">";
-  out += bme.readAltitude(ALTITUDE);
-  out += " m</span></td></tr>"; 
   out += "<tr><td>Luftfeuchte</td><td><span class=\"sensor\">";
   out += bme.readHumidity();
   out += " %</span></td></tr>"; 
@@ -490,84 +464,4 @@ void loop() {
     sendStatsInterval();
     sendStats=false;
   }
-}
-
-// Relative to absolute humidity
-// Based on https://carnotcycle.wordpress.com/2012/08/04/how-to-convert-relative-humidity-to-absolute-humidity/
-float absoluteHumidity(float temperature, float humidity) {
-  return (13.2471*pow(EULER,17.67*temperature/(temperature+243.5))*humidity/(cToKOffset+temperature));
-}
-
-// Calculate saturation vapor pressure
-// Based on dew.js, Copyright 2011 Wolfgang Kuehn, Apache License 2.0
-float saturationVaporPressure(float temperature) {
-  if(temperature < 173 || temperature > 678) return -112; //Temperature out of range
-
-  float svp = 0;
-  if(temperature <= cToKOffset) {
-    /**
-      * -100-0°C -> Saturation vapor pressure over ice
-      * ITS-90 Formulations by Bob Hardy published in 
-      * "The Proceedings of the Third International 
-      * Symposium on Humidity & Moisture",
-      * Teddington, London, England, April 1998
-      */
-
-    svp = exp(-5.8666426e3/temperature + 2.232870244e1 + (1.39387003e-2 + (-3.4262402e-5 + (2.7040955e-8*temperature)) * temperature) * temperature + 6.7063522e-1 * log(temperature)); 
-  }else{
-    /**
-      * 0°C-400°C -> Saturation vapor pressure over water
-      * IAPWS Industrial Formulation 1997
-      * for the Thermodynamic Properties of Water and Steam
-      * by IAPWS (International Association for the Properties
-      * of Water and Steam), Erlangen, Germany, September 1997.
-      * Equation 30 in Section 8.1 "The Saturation-Pressure 
-      * Equation (Basic Equation)"
-      */
-
-    const float th = temperature + -0.23855557567849 / (temperature - 0.65017534844798e3);
-    const float a  = (th + 0.11670521452767e4) * th + -0.72421316703206e6;
-    const float b  = (-0.17073846940092e2 * th + 0.12020824702470e5) * th + -0.32325550322333e7;
-    const float c  = (0.14915108613530e2 * th + -0.48232657361591e4) * th + 0.40511340542057e6;
-
-    svp = 2 * c / (-b + sqrt(b * b - 4 * a * c));
-    svp *= svp;
-    svp *= svp;
-    svp *= 1e6;
-  }
-  
-  yield();
-
-  return svp;
-}
-
-// Calculate dew point in °C
-// Based on dew.js, Copyright 2011 Wolfgang Kuehn, Apache License 2.0
-float dewPoint(float temperature, float humidity)
-{
-  temperature += cToKOffset; //Celsius to Kelvin
-
-  if(humidity < 0 || humidity > 100) return -111; //Invalid humidity
-  if(temperature < 173 || temperature > 678) return -112; //Temperature out of range
-
-  humidity = humidity / 100 * saturationVaporPressure(temperature);
-  
-  byte mc = 10;
-
-  float xNew;
-  float dx;
-  float z;
-
-  do {
-    dx = temperature / 1000;
-    z = saturationVaporPressure(temperature);
-    xNew = temperature + dx * (humidity - z) / (saturationVaporPressure(temperature + dx) - z);
-    if (abs((xNew - temperature) / xNew) < 0.0001) {
-        return xNew - cToKOffset;
-    }
-    temperature = xNew;
-    mc--;
-  } while(mc > 0);
-
-  return -113; //Solver did not get a close result
 }
